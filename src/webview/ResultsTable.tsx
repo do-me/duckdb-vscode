@@ -17,6 +17,7 @@ import {
 import { ColumnFilterPopover } from './ui/ColumnFilterPopover';
 import { formatValue, formatTableAsText } from './utils/format';
 import { Copy, Download, ExternalLink, ChevronDown, Filter, Code, BarChart2, ArrowUp, ArrowDown, ChevronsUpDown, RefreshCw } from 'lucide-react';
+import { CopyButton } from './ui/CopyButton';
 import { IconButton } from './ui/IconButton';
 import { PopoverMenu } from './ui/PopoverMenu';
 import { useToast } from './ui/useToast';
@@ -1065,6 +1066,7 @@ function ResizableHeader({ column, width, isSorted, sortDirection, isSelected, h
       <div className="th-content">
         <span className="col-name" onClick={onSelect}>{column}</span>
         <div className="th-actions">
+          <CopyButton text={column} title={`Copy "${column}"`} className="th-copy-btn" size={12} />
           {onOpenFilter && (
             <button 
               className={`header-icon-btn filter-btn ${hasFilter ? 'active' : ''}`} 

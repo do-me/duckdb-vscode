@@ -2686,7 +2686,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerCustomEditorProvider(
       DataFileEditorProvider.viewType,
       dataFileProvider,
-      { supportsMultipleEditorsPerDocument: false }
+      {
+        supportsMultipleEditorsPerDocument: false,
+        webviewOptions: { retainContextWhenHidden: true },
+      }
     )
   );
 
@@ -2703,7 +2706,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerCustomEditorProvider(
       TableEditorProvider.viewType,
       tableEditorProvider,
-      { supportsMultipleEditorsPerDocument: false }
+      {
+        supportsMultipleEditorsPerDocument: false,
+        webviewOptions: { retainContextWhenHidden: true },
+      }
     )
   );
 

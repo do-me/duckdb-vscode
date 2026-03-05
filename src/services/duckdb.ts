@@ -1405,6 +1405,32 @@ export class DuckDBService {
   }
 
   /**
+   * Read Parquet file-level key-value metadata from the footer.
+   * Returns an empty array for non-parquet files or files without KV metadata.
+   */
+  async getParquetKvMetadata(
+    filePath: string
+  ): Promise<Array<{ key: string; value: string }>> {
+    await this.initialize();
+    if (!this.connection) {
+      throw new Error("DuckDB connection not available");
+    }
+
+    const escaped = filePath.replace(/'/g, "''");
+    try {
+      const result = await this.connection.runAndReadAll(
+        `SELECT key::VARCHAR AS key, value::VARCHAR AS value FROM parquet_kv_metadata('${escaped}')`
+      );
+      return result.getRowObjectsJS().map((r) => ({
+        key: String(r.key),
+        value: String(r.value),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Get column summaries for a file using SUMMARIZE (no cache needed).
    * Returns distinct count, null percentage, and column type for each column.
    * Cheap for Parquet (reads footer metadata), requires full scan for CSV/JSON.

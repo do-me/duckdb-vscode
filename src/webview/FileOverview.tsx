@@ -5,8 +5,9 @@ import { formatCount } from './utils/format';
 import {
   ChevronDown, ChevronRight, Play, FileText,
   CheckSquare, Square, Minus,
-  Search, X, Database, Eye,
+  Search, X, Database, Eye, Tag,
 } from 'lucide-react';
+import { Modal } from './ui/Modal';
 import { SqlPreview } from './ui/SqlHighlight';
 import { SqlModal } from './ui/SqlModal';
 import { FuzzyHighlight, EMPTY_POSITIONS } from './ui/FuzzyHighlight';
@@ -68,6 +69,10 @@ export function FileOverview({ metadata }: FileOverviewProps) {
   // Summaries (auto-loaded from SUMMARIZE)
   const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
   const [summariesLoading, setSummariesLoading] = useState(true);
+
+  // Parquet key-value metadata
+  const kvMetadata = (metadata.sourceKind === 'file' && metadata.kvMetadata) || [];
+  const [showKvModal, setShowKvModal] = useState(false);
 
   // Per-column detailed stats (lazy loaded on expand)
   const [expandedColumn, setExpandedColumn] = useState<string | null>(null);
@@ -297,8 +302,65 @@ export function FileOverview({ metadata }: FileOverviewProps) {
               </span>
             </>
           )}
+          {kvMetadata.length > 0 && (
+            <>
+              <span className="file-overview-stat-sep">·</span>
+              <button
+                className="file-overview-stat file-overview-stat-link"
+                onClick={() => setShowKvModal(true)}
+                title="View file metadata"
+              >
+                <Tag size={11} />
+                {kvMetadata.length} metadata
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Parquet key-value metadata modal */}
+      {showKvModal && (
+        <Modal
+          title="File Metadata"
+          onClose={() => setShowKvModal(false)}
+          onCopy={() => {
+            const text = kvMetadata.map(kv => `${kv.key}\t${kv.value}`).join('\n');
+            navigator.clipboard.writeText(text);
+          }}
+          copyLabel="Copy all"
+          size={`${kvMetadata.length} entries`}
+          className="kv-metadata-modal"
+        >
+          <div className="modal-content kv-metadata-content">
+            <table className="file-overview-schema-table kv-metadata-table">
+              <thead>
+                <tr>
+                  <th>Key</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kvMetadata.map((kv, i) => (
+                  <tr key={i} className="file-overview-schema-row">
+                    <td className="kv-metadata-key">
+                      <span className="file-overview-schema-name-inner">
+                        {kv.key}
+                        <CopyButton text={kv.key} title={`Copy key`} className="file-overview-copy-btn" size={12} />
+                      </span>
+                    </td>
+                    <td className="kv-metadata-value">
+                      <span className="file-overview-schema-name-inner">
+                        <span className="kv-metadata-value-text">{kv.value}</span>
+                        <CopyButton text={kv.value} title={`Copy value`} className="file-overview-copy-btn" size={12} />
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
 
       {/* Action bar */}
       <div className="file-overview-actions">
@@ -467,7 +529,7 @@ export function FileOverview({ metadata }: FileOverviewProps) {
                     </td>
                     <td className="file-overview-schema-name" onClick={() => handleToggleExpand(col.name)}>
                       <span className="file-overview-schema-name-inner">
-                        <FuzzyHighlight text={col.name} indices={fuzzyPositions.get(col.name) ?? EMPTY_POSITIONS} />
+                        <span><FuzzyHighlight text={col.name} indices={fuzzyPositions.get(col.name) ?? EMPTY_POSITIONS} /></span>
                         <CopyButton
                           text={col.name}
                           title={`Copy "${col.name}"`}

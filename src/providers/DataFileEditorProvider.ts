@@ -57,12 +57,15 @@ export class DataFileEditorProvider
     const fileName = path.basename(document.uri.fsPath);
     const documentUri = document.uri;
 
+    const isParquet = fileType === "parquet";
+
     const source: OverviewDataSource = {
       async getMetadata(): Promise<DataOverviewMetadata> {
-        const [metadata, stat] = await Promise.all([
+        const [metadata, stat, kvMetadata] = await Promise.all([
           db.getFileMetadata(filePath),
-          vscode.workspace.fs.stat(documentUri),
-        ]);
+          Promise.resolve(vscode.workspace.fs.stat(documentUri)),
+          isParquet ? db.getParquetKvMetadata(filePath) : Promise.resolve([]),
+        ] as const);
         return {
           sourceKind: "file",
           displayName: fileName,
@@ -70,6 +73,7 @@ export class DataFileEditorProvider
           fileSize: stat.size,
           rowCount: metadata.rowCount,
           columns: metadata.columns,
+          ...(kvMetadata.length > 0 && { kvMetadata }),
         };
       },
 

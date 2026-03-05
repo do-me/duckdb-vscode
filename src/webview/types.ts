@@ -81,6 +81,7 @@ export interface FileSourceMetadata extends BaseOverviewMetadata {
   sourceKind: "file";
   fileType: string; // "parquet" | "csv" | "tsv" | "json" | "jsonl" | "ndjson"
   fileSize: number; // bytes
+  kvMetadata?: Array<{ key: string; value: string }>;
 }
 
 /**
