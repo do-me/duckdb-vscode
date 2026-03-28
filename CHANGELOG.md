@@ -4,6 +4,29 @@ All notable changes to the "duckdb" extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [0.0.24] - 2026-03-25
+
+### Added
+- **Excel file support** — `.xlsx` files now open directly in the DuckDB data viewer. Workbooks with multiple sheets show a container overview with expandable column previews per sheet; click "Open" to explore any sheet with full column stats, pagination, sorting, filtering, and export.
+- New `duckdb.fileViewer.excel` setting (default: on) to control auto-opening `.xlsx` files
+- The DuckDB `excel` extension is auto-installed and loaded on first `.xlsx` open
+- `read_xlsx` added to SQL autocomplete suggestions
+- Added `"Data Science"` marketplace category and `excel`, `xlsx`, `spreadsheet`, `sql` keywords for discoverability
+
+### Internal
+- Zero-dependency xlsx sheet name reader (`xlsxSheetReader.ts`) — parses ZIP central directory + `xl/workbook.xml` using only Node builtins (`fs` + `zlib`)
+- New `ContainerOverview` React component and `setupMultiTableOverviewWebview` handler for multi-table file types
+- `MultiTableDataSource` interface in `overviewHandler.ts` for future `.db`/`.duckdb` file support
+
+## [0.0.23] - 2026-03-01
+
+### Added
+- Parquet key-value metadata viewer (click metadata count in file overview header)
+
+### Fixed
+- File/table explorer no longer loses state when panel is unfocused
+- Minor style fix with fuzzy search highlighting
+
 ## [0.0.22] - 2026-02-17
 
 ### Added
