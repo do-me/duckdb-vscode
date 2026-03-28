@@ -737,6 +737,7 @@ async function getTableCompletions(
     { name: "read_csv", detail: "Read CSV file" },
     { name: "read_parquet", detail: "Read Parquet file" },
     { name: "read_json", detail: "Read JSON file" },
+    { name: "read_xlsx", detail: "Read Excel file" },
   ];
 
   for (const fn of fileFunctions) {

@@ -1,7 +1,7 @@
 {
   "name": "duckdb",
   "displayName": "DuckDB",
-  "description": "A DuckDB client for VS Code",
+  "description": "A DuckDB client for VS Code — query CSV, Parquet, JSON, and Excel files directly",
   "version": "0.0.23",
   "publisher": "chuckjonas",
   "icon": "resources/icon.png",
@@ -15,6 +15,7 @@
   },
   "categories": [
     "Programming Languages",
+    "Data Science",
     "Other"
   ],
   "keywords": [
@@ -22,7 +23,11 @@
     "parquet",
     "csv",
     "tsv",
-    "jsonl"
+    "jsonl",
+    "excel",
+    "xlsx",
+    "spreadsheet",
+    "sql"
   ],
   "activationEvents": [
     "onStartupFinished",
@@ -841,6 +846,11 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Automatically open `.jsonl` and `.ndjson` files with the DuckDB data viewer.\n\nPlain `.json` files are always available via **Open With…** but are never auto-opened (they are too commonly used for configuration)."
+        },
+        "duckdb.fileViewer.excel": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Automatically open `.xlsx` files with the DuckDB data viewer.\n\nFor workbooks with multiple sheets, a sheet picker is shown first. Requires the DuckDB `excel` extension (auto-installed on first use)."
         }
       }
     },
@@ -876,6 +886,9 @@
           },
           {
             "filenamePattern": "*.ndjson"
+          },
+          {
+            "filenamePattern": "*.xlsx"
           }
         ],
         "priority": "option"

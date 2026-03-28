@@ -3531,3 +3531,95 @@ button.stat-clickable.active .stat-value {
   padding: 3px 8px;
   font-size: var(--font-size-sm);
 }
+
+/* ============================================================================
+   Container Overview (multi-sheet / multi-table files)
+   ============================================================================ */
+
+.container-overview-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-md) var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.container-sheet-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.container-sheet-card:hover {
+  border-color: var(--border-hover, var(--text-muted));
+}
+
+.container-sheet-card-expanded {
+  border-color: color-mix(in srgb, var(--accent-blue) 40%, var(--border));
+}
+
+.container-sheet-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+.container-sheet-header:hover {
+  background: var(--bg-hover);
+}
+
+.container-sheet-chevron {
+  display: inline-flex;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.container-sheet-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.container-sheet-name {
+  font-weight: 600;
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.container-sheet-meta {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  margin-left: auto;
+  margin-right: var(--space-sm);
+}
+
+.container-sheet-open-btn {
+  flex-shrink: 0;
+  padding: 3px 10px !important;
+  font-size: var(--font-size-xs) !important;
+  gap: 3px;
+}
+
+.container-sheet-columns {
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.container-sheet-columns .file-overview-schema-table td {
+  cursor: default;
+}
+
+.container-sheet-columns .file-overview-schema-row:hover {
+  background: transparent;
+}

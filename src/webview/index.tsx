@@ -2,7 +2,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryPanel } from './QueryPanel';
 import { FileOverview } from './FileOverview';
-import type { MultiQueryResultWithPages, DataOverviewMetadata } from './types';
+import { ContainerOverview } from './ContainerOverview';
+import type { MultiQueryResultWithPages, DataOverviewMetadata, ContainerOverviewMetadata } from './types';
 
 // VS Code API for communicating with extension
 declare const acquireVsCodeApi: () => {
@@ -16,13 +17,14 @@ const vscode = acquireVsCodeApi();
 // Expose vscode API globally for child components
 (window as unknown as { vscodeApi: typeof vscode }).vscodeApi = vscode;
 
-type ViewMode = 'loading' | 'fileOverview' | 'results';
+type ViewMode = 'loading' | 'containerOverview' | 'fileOverview' | 'results';
 
 interface AppState {
   viewMode: ViewMode;
   loadingMessage: string;
   result: MultiQueryResultWithPages | null;
   fileMetadata: DataOverviewMetadata | null;
+  containerMetadata: ContainerOverviewMetadata | null;
   pageSize: number;
   maxCopyRows: number;
 }
@@ -33,6 +35,7 @@ function App() {
     loadingMessage: 'Loading…',
     result: null,
     fileMetadata: null,
+    containerMetadata: null,
     pageSize: 1000,
     maxCopyRows: 50000,
   });
@@ -55,6 +58,12 @@ function App() {
           fileMetadata: message.data,
           pageSize: message.pageSize || prev.pageSize,
           maxCopyRows: message.maxCopyRows || prev.maxCopyRows,
+        }));
+      } else if (message.type === 'containerMetadata') {
+        setState(prev => ({
+          ...prev,
+          viewMode: 'containerOverview',
+          containerMetadata: message.data,
         }));
       } else if (message.type === 'loadingStatus') {
         setState(prev => ({
@@ -89,8 +98,21 @@ function App() {
     );
   }
 
+  if (state.viewMode === 'containerOverview' && state.containerMetadata) {
+    return <ContainerOverview metadata={state.containerMetadata} />;
+  }
+
   if (state.viewMode === 'fileOverview' && state.fileMetadata) {
-    return <FileOverview metadata={state.fileMetadata} />;
+    const hasContainer = state.containerMetadata !== null;
+    return (
+      <FileOverview
+        metadata={state.fileMetadata}
+        onBackToContainer={hasContainer ? () => {
+          vscode.postMessage({ type: 'backToContainer' });
+          setState(prev => ({ ...prev, viewMode: 'containerOverview' }));
+        } : undefined}
+      />
+    );
   }
 
   if (state.viewMode === 'results' && state.result) {

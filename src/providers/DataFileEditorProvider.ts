@@ -1,20 +1,24 @@
 /**
  * DataFileEditorProvider - Custom readonly editor for data files
  *
- * Opens parquet, CSV, JSON, and JSONL files with DuckDB, displaying
+ * Opens parquet, CSV, JSON, JSONL, and Excel files with DuckDB, displaying
  * query results in the same React webview used for regular query results.
  *
- * Parquet is enabled by default (replaces the "binary file" error).
- * CSV/JSON/JSONL are available via "Open With..." and can be enabled
- * as defaults via settings.
+ * For xlsx files with multiple sheets, shows a container overview first
+ * that lets the user pick a sheet before drilling into the column view.
  */
 import * as vscode from "vscode";
 import * as path from "path";
 import { getDuckDBService } from "../services/duckdb";
+import { installAndLoadExtension } from "../services/extensionsService";
+import { getXlsxSheetNames } from "../services/xlsxSheetReader";
 import {
   setupOverviewWebview,
+  setupMultiTableOverviewWebview,
   type OverviewDataSource,
+  type MultiTableDataSource,
   type DataOverviewMetadata,
+  type ContainerOverviewMetadata,
 } from "./overviewHandler";
 
 class DataFileDocument implements vscode.CustomDocument {
@@ -40,7 +44,6 @@ export class DataFileEditorProvider
     const filePath = this.getDisplayPath(document.uri);
     const db = getDuckDBService();
 
-    // Detect file type from extension
     const ext = path
       .extname(document.uri.fsPath)
       .toLowerCase()
@@ -52,10 +55,22 @@ export class DataFileEditorProvider
       json: "json",
       jsonl: "jsonl",
       ndjson: "ndjson",
+      xlsx: "xlsx",
     };
     const fileType = fileTypeMap[ext] || ext;
     const fileName = path.basename(document.uri.fsPath);
     const documentUri = document.uri;
+
+    if (fileType === "xlsx") {
+      await this.resolveExcelEditor(
+        document,
+        webviewPanel,
+        filePath,
+        fileName,
+        db
+      );
+      return;
+    }
 
     const isParquet = fileType === "parquet";
 
@@ -102,6 +117,144 @@ export class DataFileEditorProvider
     setupOverviewWebview(webviewPanel, this.context, source);
   }
 
+  /**
+   * Handle xlsx files: discover sheets, then either show a single-sheet
+   * overview or a multi-sheet container overview.
+   */
+  private async resolveExcelEditor(
+    document: DataFileDocument,
+    webviewPanel: vscode.WebviewPanel,
+    filePath: string,
+    fileName: string,
+    db: ReturnType<typeof getDuckDBService>
+  ): Promise<void> {
+    const documentUri = document.uri;
+
+    // Ensure the DuckDB excel extension is available
+    try {
+      await installAndLoadExtension(
+        (sql) => db.run(sql),
+        "excel"
+      );
+    } catch {
+      // May already be loaded — continue and let queries fail with a clear error
+    }
+
+    const sheetNames = getXlsxSheetNames(document.uri.fsPath);
+
+    // Single sheet: use the standard single-table flow
+    if (sheetNames.length <= 1) {
+      const sheetName = sheetNames[0] || "Sheet1";
+      const source = this.buildExcelSheetSource(
+        filePath,
+        fileName,
+        sheetName,
+        documentUri,
+        db
+      );
+      setupOverviewWebview(webviewPanel, this.context, source);
+      return;
+    }
+
+    // Multiple sheets: use the container overview flow
+    const multiSource: MultiTableDataSource = {
+      async getContainerMetadata(): Promise<ContainerOverviewMetadata> {
+        const stat = await vscode.workspace.fs.stat(documentUri);
+
+        // Fetch metadata for all sheets in parallel
+        const tableInfos = await Promise.all(
+          sheetNames.map(async (name) => {
+            try {
+              const meta = await db.getExcelSheetMetadata(filePath, name);
+              return {
+                id: name,
+                name,
+                rowCount: meta.rowCount,
+                columnCount: meta.columns.length,
+                columns: meta.columns,
+              };
+            } catch {
+              return {
+                id: name,
+                name,
+                rowCount: 0,
+                columnCount: 0,
+                columns: [],
+              };
+            }
+          })
+        );
+
+        return {
+          sourceKind: "multi-table",
+          displayName: fileName,
+          fileType: "xlsx",
+          fileSize: stat.size,
+          tables: tableInfos,
+        };
+      },
+
+      getTableSource: (tableId: string): OverviewDataSource => {
+        return this.buildExcelSheetSource(
+          filePath,
+          tableId,
+          tableId,
+          documentUri,
+          db
+        );
+      },
+    };
+
+    setupMultiTableOverviewWebview(webviewPanel, this.context, multiSource);
+  }
+
+  private buildExcelSheetSource(
+    filePath: string,
+    displayName: string,
+    sheetName: string,
+    documentUri: vscode.Uri,
+    db: ReturnType<typeof getDuckDBService>
+  ): OverviewDataSource {
+    return {
+      async getMetadata(): Promise<DataOverviewMetadata> {
+        const [metadata, stat] = await Promise.all([
+          db.getExcelSheetMetadata(filePath, sheetName),
+          Promise.resolve(vscode.workspace.fs.stat(documentUri)),
+        ]);
+        return {
+          sourceKind: "file",
+          displayName,
+          fileType: "xlsx",
+          fileSize: stat.size,
+          rowCount: metadata.rowCount,
+          columns: metadata.columns,
+        };
+      },
+
+      async getSummaries() {
+        return db.getExcelSheetSummaries(filePath, sheetName);
+      },
+
+      async getColumnStats(column: string) {
+        return db.getExcelSheetColumnStats(filePath, sheetName, column);
+      },
+
+      buildSelectSql(columns?: string[], limit?: number): string {
+        const escapedPath = filePath.replace(/'/g, "''");
+        const escapedSheet = sheetName.replace(/'/g, "''");
+        const colList =
+          columns && columns.length > 0
+            ? columns.map((c) => `"${c}"`).join(", ")
+            : "*";
+        let sql = `SELECT ${colList} FROM read_xlsx('${escapedPath}', sheet = '${escapedSheet}', ignore_errors = true)`;
+        if (limit) {
+          sql += ` LIMIT ${limit}`;
+        }
+        return sql;
+      },
+    };
+  }
+
   private getDisplayPath(uri: vscode.Uri): string {
     const filePath = uri.fsPath;
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -141,6 +294,11 @@ const FILE_TYPE_ASSOCIATIONS: Array<{
     // common for config files and would be disruptive as a default.
     patterns: ["*.jsonl", "*.ndjson"],
     defaultEnabled: false,
+  },
+  {
+    setting: "fileViewer.excel",
+    patterns: ["*.xlsx"],
+    defaultEnabled: true,
   },
 ];
 

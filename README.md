@@ -3,7 +3,7 @@
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/chuckjonas.duckdb?label=VS%20Code%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=chuckjonas.duckdb)
 [![Open VSX](https://img.shields.io/open-vsx/v/chuckjonas/duckdb?label=Open%20VSX)](https://open-vsx.org/extension/chuckjonas/duckdb)
 
-> An unofficial DuckDB extension for Visual Studio Code. Query CSV, Parquet and JSON files directly. Connect to `.duckdb`, S3, Postgres, Google Sheets and more.
+> An unofficial DuckDB extension for Visual Studio Code. Query CSV, Parquet, JSON, and Excel files directly. Connect to `.duckdb`, S3, Postgres, Google Sheets and more.
 
 ![Query Parquet files directly](https://raw.githubusercontent.com/ChuckJonas/duckdb-vscode/main/resources/query-parquet.gif)
 
@@ -34,7 +34,8 @@ Performance Note: When you execute a query, the extension creates a temporary ta
 
 ### File Integration
 
-- **Auto-open data files** — `.parquet` and `.csv`/`.tsv` files open directly in the DuckDB results view with full pagination, sorting, filtering, and export. No more "binary file" errors for Parquet!
+- **Auto-open data files** — `.parquet`, `.csv`/`.tsv`, and `.xlsx` files open directly in the DuckDB data viewer with full pagination, sorting, filtering, and export. No more "binary file" errors for Parquet!
+- **Excel support** — `.xlsx` workbooks with multiple sheets show a sheet picker with column previews; click any sheet to explore it. The DuckDB `excel` extension is auto-installed on first use.
 - **JSON/JSONL support** — `.json`, `.jsonl`, and `.ndjson` available via **right-click → Open With… → DuckDB Data Viewer**
 - **Configurable** — Each file type can be toggled via `duckdb.fileViewer.*` settings
 - **Right-click to query** — Select files in Explorer → "DuckDB: Query File" to open a SQL editor with `SELECT * FROM '{file}'`
@@ -188,6 +189,10 @@ Automatically open `.csv` and `.tsv` files with the DuckDB data viewer (default:
 #### `duckdb.fileViewer.json`
 
 Automatically open `.jsonl` and `.ndjson` files with the DuckDB data viewer (default: `false`). Plain `.json` files are always available via **Open With…** but are never auto-opened to avoid disrupting config files.
+
+#### `duckdb.fileViewer.excel`
+
+Automatically open `.xlsx` files with the DuckDB data viewer (default: `true`). For workbooks with multiple sheets, a sheet picker is shown first. Requires the DuckDB `excel` extension, which is auto-installed on first use.
 
 ### Results Display
 

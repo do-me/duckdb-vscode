@@ -101,6 +101,33 @@ export interface TableSourceMetadata extends BaseOverviewMetadata {
 export type DataOverviewMetadata = FileSourceMetadata | TableSourceMetadata;
 
 // ============================================================================
+// CONTAINER OVERVIEW METADATA (for multi-table files like xlsx, .db)
+// ============================================================================
+
+/**
+ * Summary info for a single table/sheet inside a container file.
+ */
+export interface ContainerTableInfo {
+  id: string;
+  name: string;
+  rowCount: number;
+  columnCount: number;
+  columns: { name: string; type: string }[];
+}
+
+/**
+ * Metadata for a file that contains multiple tables/sheets.
+ * Used by ContainerOverview to render the sheet list.
+ */
+export interface ContainerOverviewMetadata {
+  sourceKind: "multi-table";
+  displayName: string;
+  fileType: string;
+  fileSize: number;
+  tables: ContainerTableInfo[];
+}
+
+// ============================================================================
 // COLUMN SUMMARIES (from SUMMARIZE)
 // ============================================================================
 

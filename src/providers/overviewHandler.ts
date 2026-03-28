@@ -13,10 +13,13 @@ import {
   type MultiQueryResultWithPages,
 } from "../services/duckdb";
 import { handleExport } from "../services/webviewService";
-import type { DataOverviewMetadata } from "../webview/types";
+import type {
+  DataOverviewMetadata,
+  ContainerOverviewMetadata,
+} from "../webview/types";
 
 // Re-export for convenience
-export type { DataOverviewMetadata };
+export type { DataOverviewMetadata, ContainerOverviewMetadata };
 
 // ============================================================================
 // DataSource interface
@@ -362,6 +365,371 @@ export function setupOverviewWebview(
 
       case "goToSource":
         // No-op in overview mode — there is no source file to navigate to.
+        break;
+    }
+  });
+}
+
+// ============================================================================
+// Multi-table data source (for xlsx, .db files with multiple sheets/tables)
+// ============================================================================
+
+/**
+ * Abstraction over a file that contains multiple tables/sheets.
+ * The provider implements this to supply container-level metadata
+ * and per-table OverviewDataSource instances.
+ */
+export interface MultiTableDataSource {
+  /** Fetch container-level metadata (sheet list with columns/row counts). */
+  getContainerMetadata(): Promise<ContainerOverviewMetadata>;
+
+  /** Get an OverviewDataSource for a specific table/sheet by ID. */
+  getTableSource(tableId: string): OverviewDataSource;
+}
+
+/**
+ * Configure a webview panel for a multi-table container (e.g. xlsx workbook).
+ * Shows the container overview first; when the user opens a specific table,
+ * switches to the standard single-table overview flow.
+ */
+export function setupMultiTableOverviewWebview(
+  panel: vscode.WebviewPanel,
+  context: vscode.ExtensionContext,
+  multiSource: MultiTableDataSource
+): void {
+  const config = vscode.workspace.getConfiguration("duckdb");
+  const pageSize = config.get<number>("pageSize", 1000);
+  const maxCopyRows = config.get<number>("maxCopyRows", 50000);
+  const db = getDuckDBService();
+
+  let cacheIds: string[] = [];
+  let sortColumn: string | undefined;
+  let sortDirection: "asc" | "desc" | undefined;
+  let activeSource: OverviewDataSource | null = null;
+  let containerMeta: ContainerOverviewMetadata | null = null;
+
+  panel.webview.options = {
+    enableScripts: true,
+    localResourceRoots: [
+      vscode.Uri.joinPath(context.extensionUri, "out", "webview"),
+    ],
+  };
+
+  panel.iconPath = vscode.Uri.joinPath(
+    context.extensionUri,
+    "resources",
+    "duckdb-icon.svg"
+  );
+
+  const scriptUri = panel.webview.asWebviewUri(
+    vscode.Uri.joinPath(context.extensionUri, "out", "webview", "results.js")
+  );
+  panel.webview.html = getWebviewHtml(scriptUri);
+
+  panel.onDidDispose(() => {
+    for (const id of cacheIds) {
+      db.dropCache(id).catch(() => {});
+    }
+  });
+
+  function sendLoadingStatus(message: string): void {
+    panel.webview.postMessage({ type: "loadingStatus", message });
+  }
+
+  async function sendContainerMetadata(): Promise<void> {
+    try {
+      sendLoadingStatus("Discovering sheets…");
+      containerMeta = await multiSource.getContainerMetadata();
+      panel.webview.postMessage({
+        type: "containerMetadata",
+        data: containerMeta,
+      });
+    } catch (error) {
+      panel.webview.postMessage({
+        type: "queryError",
+        error: String(error),
+      });
+    }
+  }
+
+  async function sendTableMetadata(): Promise<void> {
+    if (!activeSource) return;
+    try {
+      sendLoadingStatus("Fetching schema…");
+      const metadata = await activeSource.getMetadata();
+      panel.webview.postMessage({
+        type: "fileMetadata",
+        data: metadata,
+        pageSize,
+        maxCopyRows,
+      });
+    } catch (error) {
+      panel.webview.postMessage({
+        type: "queryError",
+        error: String(error),
+      });
+    }
+  }
+
+  function resetCaches(): void {
+    for (const id of cacheIds) {
+      db.dropCache(id).catch(() => {});
+    }
+    cacheIds = [];
+    sortColumn = undefined;
+    sortDirection = undefined;
+  }
+
+  panel.webview.onDidReceiveMessage(async (message) => {
+    switch (message.type) {
+      case "ready":
+        await sendContainerMetadata();
+        break;
+
+      case "openTable": {
+        resetCaches();
+        activeSource = multiSource.getTableSource(message.tableId);
+        await sendTableMetadata();
+        break;
+      }
+
+      case "backToContainer":
+        resetCaches();
+        activeSource = null;
+        if (containerMeta) {
+          panel.webview.postMessage({
+            type: "containerMetadata",
+            data: containerMeta,
+          });
+        } else {
+          await sendContainerMetadata();
+        }
+        break;
+
+      // ---- Single-table handlers (only active when a table is selected) ----
+
+      case "queryFile": {
+        if (!activeSource) break;
+        try {
+          sendLoadingStatus("Running query…");
+          resetCaches();
+          const querySql = activeSource.buildSelectSql(
+            message.columns,
+            message.limit
+          );
+          const result = await db.executeQuery(querySql, pageSize);
+          cacheIds = collectCacheIds(result);
+          panel.webview.postMessage({
+            type: "queryResult",
+            data: result,
+            pageSize,
+            maxCopyRows,
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "queryError",
+            error: String(error),
+          });
+        }
+        break;
+      }
+
+      case "openAsSql": {
+        if (!activeSource) break;
+        const sql = activeSource.buildSelectSql(message.columns);
+        const doc = await vscode.workspace.openTextDocument({
+          content: sql,
+          language: "sql",
+        });
+        await vscode.window.showTextDocument(doc, {
+          viewColumn: vscode.ViewColumn.Beside,
+        });
+        break;
+      }
+
+      case "requestFileSummaries":
+        if (!activeSource) break;
+        try {
+          const summaries = await activeSource.getSummaries();
+          panel.webview.postMessage({
+            type: "fileSummaries",
+            data: summaries,
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "fileSummaries",
+            data: [],
+            error: String(error),
+          });
+        }
+        break;
+
+      case "requestFileColumnStats":
+        if (!activeSource) break;
+        try {
+          const stats = await activeSource.getColumnStats(message.column);
+          panel.webview.postMessage({
+            type: "fileColumnStats",
+            column: message.column,
+            data: stats,
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "fileColumnStats",
+            column: message.column,
+            data: null,
+            error: String(error),
+          });
+        }
+        break;
+
+      case "refreshQuery":
+        if (activeSource) {
+          try {
+            resetCaches();
+            await sendTableMetadata();
+          } catch (error) {
+            panel.webview.postMessage({
+              type: "refreshError",
+              error: String(error),
+            });
+          }
+        } else {
+          await sendContainerMetadata();
+        }
+        break;
+
+      // ---- Cache-based handlers (identical for all sources) ----
+
+      case "requestPage":
+        try {
+          const pageData = await db.fetchPage(
+            message.cacheId,
+            message.offset,
+            pageSize,
+            message.sortColumn,
+            message.sortDirection,
+            message.whereClause
+          );
+          sortColumn = message.sortColumn;
+          sortDirection = message.sortDirection;
+          panel.webview.postMessage({
+            type: "pageData",
+            data: pageData,
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "filterError",
+            cacheId: message.cacheId,
+            error: String(error),
+          });
+        }
+        break;
+
+      case "requestColumnStats":
+        try {
+          const cacheStats = await db.getCacheColumnStats(
+            message.cacheId,
+            message.column,
+            message.whereClause
+          );
+          panel.webview.postMessage({
+            type: "columnStats",
+            cacheId: message.cacheId,
+            data: cacheStats,
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "columnStats",
+            cacheId: message.cacheId,
+            column: message.column,
+            data: null,
+            error: String(error),
+          });
+        }
+        break;
+
+      case "requestColumnSummaries":
+        try {
+          const cacheSummaries = await db.getCacheColumnSummaries(
+            message.cacheId
+          );
+          panel.webview.postMessage({
+            type: "columnSummaries",
+            cacheId: message.cacheId,
+            data: cacheSummaries,
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "columnSummaries",
+            cacheId: message.cacheId,
+            data: [],
+            error: String(error),
+          });
+        }
+        break;
+
+      case "requestDistinctValues":
+        try {
+          const [distinctValues, cardinality] = await Promise.all([
+            db.getColumnDistinctValues(
+              message.cacheId,
+              message.column,
+              100,
+              message.searchTerm
+            ),
+            db.getColumnCardinality(message.cacheId, message.column),
+          ]);
+          panel.webview.postMessage({
+            type: "distinctValues",
+            cacheId: message.cacheId,
+            column: message.column,
+            data: distinctValues,
+            cardinality,
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "distinctValues",
+            cacheId: message.cacheId,
+            column: message.column,
+            data: [],
+            cardinality: 0,
+          });
+        }
+        break;
+
+      case "export":
+        await handleExport(
+          db,
+          message.cacheId,
+          message.format,
+          maxCopyRows,
+          sortColumn,
+          sortDirection
+        );
+        break;
+
+      case "requestCopyData":
+        try {
+          const { columns, rows } = await db.getCopyData(
+            message.cacheId,
+            maxCopyRows,
+            sortColumn,
+            sortDirection
+          );
+          panel.webview.postMessage({
+            type: "copyData",
+            data: { columns, rows, maxCopyRows },
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "copyData",
+            error: String(error),
+          });
+        }
+        break;
+
+      case "goToSource":
         break;
     }
   });

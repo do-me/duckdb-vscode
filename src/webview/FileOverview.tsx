@@ -5,7 +5,7 @@ import { formatCount } from './utils/format';
 import {
   ChevronDown, ChevronRight, Play, FileText,
   CheckSquare, Square, Minus,
-  Search, X, Database, Eye, Tag,
+  Search, X, Database, Eye, Tag, ArrowLeft,
 } from 'lucide-react';
 import { Modal } from './ui/Modal';
 import { SqlPreview } from './ui/SqlHighlight';
@@ -37,6 +37,7 @@ function getFileTypeBadge(fileType: string): string {
     json: 'JSON',
     jsonl: 'JSONL',
     ndjson: 'NDJSON',
+    xlsx: 'XLSX',
   };
   return map[fileType.toLowerCase()] || fileType.toUpperCase();
 }
@@ -50,9 +51,10 @@ const SELECT_TOP_OPTIONS = [
 
 interface FileOverviewProps {
   metadata: DataOverviewMetadata;
+  onBackToContainer?: () => void;
 }
 
-export function FileOverview({ metadata }: FileOverviewProps) {
+export function FileOverview({ metadata, onBackToContainer }: FileOverviewProps) {
   const { displayName, rowCount, columns } = metadata;
   const isFile = metadata.sourceKind === 'file';
   const isTable = metadata.sourceKind === 'table';
@@ -266,6 +268,16 @@ export function FileOverview({ metadata }: FileOverviewProps) {
 
   return (
     <div className="file-overview">
+      {/* Back to container navigation */}
+      {onBackToContainer && (
+        <div className="back-to-overview">
+          <button className="btn" onClick={onBackToContainer}>
+            <ArrowLeft size={12} />
+            All Sheets
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="file-overview-header">
         <div className="file-overview-title">
