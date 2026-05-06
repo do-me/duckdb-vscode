@@ -54,6 +54,20 @@ export interface OverviewDataSource {
 // Shared webview setup
 // ============================================================================
 
+/** Options that customize the initial webview behaviour. */
+export interface OverviewWebviewOptions {
+  /**
+   * If present, the panel auto-runs `SELECT * FROM <source>` after sending
+   * metadata, landing the user directly on the results view instead of the
+   * schema overview.
+   *
+   * - `limit` undefined or `0` → no LIMIT; the full result set is materialized
+   *   into the temp cache and rows stream into the table via infinite scroll.
+   * - `limit` > 0 → applies `LIMIT N`, useful for sampling huge files.
+   */
+  autoLoad?: { limit?: number };
+}
+
 /**
  * Configure a webview panel for the overview UI and wire up all message
  * handlers. Returns a Disposable that cleans up DuckDB caches.
@@ -61,17 +75,23 @@ export interface OverviewDataSource {
 export function setupOverviewWebview(
   panel: vscode.WebviewPanel,
   context: vscode.ExtensionContext,
-  source: OverviewDataSource
+  source: OverviewDataSource,
+  options: OverviewWebviewOptions = {}
 ): void {
   const config = vscode.workspace.getConfiguration("duckdb");
-  const pageSize = config.get<number>("pageSize", 1000);
+  const pageSize = config.get<number>("pageSize", 100);
   const maxCopyRows = config.get<number>("maxCopyRows", 50000);
   const db = getDuckDBService();
+  const autoLoad = options.autoLoad;
 
   // Mutable state shared across message handlers
   let cacheIds: string[] = [];
   let sortColumn: string | undefined;
   let sortDirection: "asc" | "desc" | undefined;
+  // The most recently executed query (default top-N, queryFile, or runAdHoc).
+  // Used so "refresh" re-runs the last query rather than dropping back to
+  // the schema overview.
+  let lastQuerySql: string | undefined;
 
   // Set up webview options and content
   panel.webview.options = {
@@ -109,13 +129,41 @@ export function setupOverviewWebview(
   // ------------------------------------------------------------------
   // Helper to send metadata to the webview
   // ------------------------------------------------------------------
-  async function sendMetadata(): Promise<void> {
+  async function sendMetadata(opts: { silent?: boolean } = {}): Promise<void> {
     try {
-      sendLoadingStatus("Fetching schema…");
+      if (!opts.silent) sendLoadingStatus("Fetching schema…");
       const metadata = await source.getMetadata();
       panel.webview.postMessage({
         type: "fileMetadata",
         data: metadata,
+        pageSize,
+        maxCopyRows,
+        // When silent, the webview stores metadata in state but does not
+        // switch the visible view — used so the "Back to Overview" button
+        // works while the user lands directly on the data results.
+        silent: opts.silent ?? false,
+      });
+    } catch (error) {
+      panel.webview.postMessage({
+        type: "queryError",
+        error: String(error),
+      });
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Run an arbitrary SQL, post results, and remember it for refresh.
+  // ------------------------------------------------------------------
+  async function runQuery(querySql: string, status: string): Promise<void> {
+    try {
+      sendLoadingStatus(status);
+      resetCaches();
+      lastQuerySql = querySql;
+      const result = await db.executeQuery(querySql, pageSize);
+      cacheIds = collectCacheIds(result);
+      panel.webview.postMessage({
+        type: "queryResult",
+        data: result,
         pageSize,
         maxCopyRows,
       });
@@ -147,36 +195,32 @@ export function setupOverviewWebview(
       // ---- Overview-specific (delegated to DataSource) ----
 
       case "ready":
-        await sendMetadata();
+        if (autoLoad) {
+          // Pre-fetch metadata silently so the Back-to-Overview button works,
+          // then jump straight into the data view.
+          await sendMetadata({ silent: true });
+          const limit =
+            autoLoad.limit && autoLoad.limit > 0 ? autoLoad.limit : undefined;
+          const status = limit
+            ? `Loading first ${limit.toLocaleString()} rows…`
+            : "Materializing results…";
+          await runQuery(source.buildSelectSql(undefined, limit), status);
+        } else {
+          await sendMetadata();
+        }
         break;
 
       case "queryFile": {
-        try {
-          sendLoadingStatus("Running query…");
-          resetCaches();
-          const querySql = source.buildSelectSql(
-            message.columns,
-            message.limit
-          );
-          const result = await db.executeQuery(querySql, pageSize);
-          cacheIds = collectCacheIds(result);
-          panel.webview.postMessage({
-            type: "queryResult",
-            data: result,
-            pageSize,
-            maxCopyRows,
-          });
-        } catch (error) {
-          panel.webview.postMessage({
-            type: "queryError",
-            error: String(error),
-          });
-        }
+        const querySql = source.buildSelectSql(message.columns, message.limit);
+        await runQuery(querySql, "Running query…");
         break;
       }
 
       case "openAsSql": {
-        const sql = source.buildSelectSql(message.columns);
+        const sql =
+          typeof message.sql === "string" && message.sql.trim().length > 0
+            ? message.sql
+            : source.buildSelectSql(message.columns);
         const doc = await vscode.workspace.openTextDocument({
           content: sql,
           language: "sql",
@@ -184,6 +228,12 @@ export function setupOverviewWebview(
         await vscode.window.showTextDocument(doc, {
           viewColumn: vscode.ViewColumn.Beside,
         });
+        break;
+      }
+
+      case "runAdHoc": {
+        if (typeof message.sql !== "string" || !message.sql.trim()) break;
+        await runQuery(message.sql, "Running query…");
         break;
       }
 
@@ -223,14 +273,24 @@ export function setupOverviewWebview(
 
       case "refreshQuery":
         try {
-          resetCaches();
-          await sendMetadata();
+          if (lastQuerySql) {
+            await runQuery(lastQuerySql, "Refreshing…");
+          } else {
+            resetCaches();
+            await sendMetadata();
+          }
         } catch (error) {
           panel.webview.postMessage({
             type: "refreshError",
             error: String(error),
           });
         }
+        break;
+
+      // ---- Navigate to schema overview from results view ----
+
+      case "showOverview":
+        await sendMetadata();
         break;
 
       // ---- Cache-based handlers (identical for all sources) ----
@@ -250,11 +310,13 @@ export function setupOverviewWebview(
           panel.webview.postMessage({
             type: "pageData",
             data: pageData,
+            requestVersion: message.requestVersion,
           });
         } catch (error) {
           panel.webview.postMessage({
             type: "filterError",
             cacheId: message.cacheId,
+            requestVersion: message.requestVersion,
             error: String(error),
           });
         }
@@ -535,8 +597,11 @@ export function setupMultiTableOverviewWebview(
       }
 
       case "openAsSql": {
-        if (!activeSource) break;
-        const sql = activeSource.buildSelectSql(message.columns);
+        const sql =
+          typeof message.sql === "string" && message.sql.trim().length > 0
+            ? message.sql
+            : activeSource?.buildSelectSql(message.columns);
+        if (!sql) break;
         const doc = await vscode.workspace.openTextDocument({
           content: sql,
           language: "sql",
@@ -544,6 +609,28 @@ export function setupMultiTableOverviewWebview(
         await vscode.window.showTextDocument(doc, {
           viewColumn: vscode.ViewColumn.Beside,
         });
+        break;
+      }
+
+      case "runAdHoc": {
+        try {
+          if (typeof message.sql !== "string" || !message.sql.trim()) break;
+          sendLoadingStatus("Running query…");
+          resetCaches();
+          const result = await db.executeQuery(message.sql, pageSize);
+          cacheIds = collectCacheIds(result);
+          panel.webview.postMessage({
+            type: "queryResult",
+            data: result,
+            pageSize,
+            maxCopyRows,
+          });
+        } catch (error) {
+          panel.webview.postMessage({
+            type: "queryError",
+            error: String(error),
+          });
+        }
         break;
       }
 
@@ -616,11 +703,13 @@ export function setupMultiTableOverviewWebview(
           panel.webview.postMessage({
             type: "pageData",
             data: pageData,
+            requestVersion: message.requestVersion,
           });
         } catch (error) {
           panel.webview.postMessage({
             type: "filterError",
             cacheId: message.cacheId,
+            requestVersion: message.requestVersion,
             error: String(error),
           });
         }

@@ -4,6 +4,28 @@ All notable changes to the "duckdb" extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## Unreleased
+
+### Added
+- **Editable SQL modal** — every "View SQL" / "SQL Preview" modal is now a SQL editor: tweak the query and press ⌘↵ / Ctrl+↵ to run it in place. Works for the file overview preview, the original-query modal in the results table, and the filtered/sorted full-query modal. "Open in Editor" now uses the edited text. Tab inserts spaces.
+- **Land directly on data** — opening a `.parquet` (or other data file) now jumps straight into the data view instead of the schema overview. The schema view is still one click away via "Back to Overview".
+- New `duckdb.fileViewer.openMode` setting (`data` | `schema`, default `data`) and `duckdb.fileViewer.openRowLimit` (default `0` = unlimited) to control the new landing behaviour.
+- Skeleton-cell shimmer for rows whose chunk hasn't arrived yet — visible while you scroll faster than chunks fetch.
+
+### Changed
+- **Virtualized infinite scroll for results.** Auto-open no longer applies a `LIMIT` by default; the full result set is materialized into a DuckDB temp table and rows are streamed into the viewport on demand in 100-row chunks. Only the rows currently in (or near) the viewport live in the DOM, so scrolling 10M rows does not OOM the webview. A bounded LRU chunk cache (~80 chunks ≈ 8k rows) keeps memory flat as you scroll. Pagination buttons are gone — the scrollbar maps directly to the full result set.
+- `duckdb.pageSize` now defaults to `100` (the chunk size for infinite scroll) instead of `1000`.
+- The data viewer's refresh button now re-runs the most recent query (default top-N, ad-hoc edit, or column selection) instead of dropping back to the schema view.
+- The `requestPage` IPC echoes a `requestVersion` so chunk responses from prior sort/filter contexts are dropped instead of corrupting the cache.
+- DuckDB now spills to a per-process subdirectory under `<os.tmpdir>/duckdb-vscode/pid-<pid>-<random>/` (created via `mkdtempSync`); the directory is removed on extension shutdown so spill files don't accumulate across sessions. User-configured `duckdb.tempDirectory` is respected and never deleted.
+- Bumped `@duckdb/node-api` from `1.4.3-r.3` to `1.5.2-r.1`.
+
+### Fixed
+- When an auto-loaded query errors out, a "Back to Schema" recovery button appears so the session is not stuck on the error screen.
+
+### Notes
+- `Cmd+A` followed by Copy on a huge result set is intentionally capped at 10,000 rows (with a trailing `-- truncated` marker). For full exports, use the **Copy Table** / **Export** buttons in the footer — those use the server-side copy path and respect `duckdb.maxCopyRows`.
+
 ## [0.0.24] - 2026-03-25
 
 ### Added

@@ -52,9 +52,12 @@ function App() {
           maxCopyRows: message.maxCopyRows || prev.maxCopyRows,
         }));
       } else if (message.type === 'fileMetadata') {
+        // `silent: true` means the host pre-loaded metadata while jumping
+        // straight into the data view — we record it (so "Back to Overview"
+        // works) but don't change the visible view.
         setState(prev => ({
           ...prev,
-          viewMode: 'fileOverview',
+          viewMode: message.silent ? prev.viewMode : 'fileOverview',
           fileMetadata: message.data,
           pageSize: message.pageSize || prev.pageSize,
           maxCopyRows: message.maxCopyRows || prev.maxCopyRows,
@@ -90,10 +93,19 @@ function App() {
 
   if (state.viewMode === 'loading') {
     const isError = state.loadingMessage.startsWith('Error:');
+    const canFallBackToSchema = isError && state.fileMetadata !== null;
     return (
       <div className="loading">
         {!isError && <div className="loading-spinner" />}
         <span className={isError ? 'loading-error' : 'loading-text'}>{state.loadingMessage}</span>
+        {canFallBackToSchema && (
+          <button
+            className="btn btn-surface"
+            onClick={() => setState(prev => ({ ...prev, viewMode: 'fileOverview' }))}
+          >
+            Back to Schema
+          </button>
+        )}
       </div>
     );
   }
