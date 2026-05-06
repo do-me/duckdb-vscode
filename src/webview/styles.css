@@ -1011,12 +1011,9 @@ tr:hover td:not(.row-number) {
   font-size: var(--font-size-sm);
 }
 
-/* Row Numbers */
+/* Row Numbers — width is set inline so the column is resizable. */
 .row-number-header,
 .row-number {
-  width: 50px;
-  min-width: 50px;
-  max-width: 50px;
   text-align: right;
   color: var(--text-muted);
   font-size: var(--font-size-sm);
@@ -1024,6 +1021,18 @@ tr:hover td:not(.row-number) {
   user-select: none;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-number-header {
+  position: relative;
+}
+
+.row-number-header .resize-handle {
+  /* Same affordance as data-column resize handles. */
+  cursor: col-resize;
 }
 
 .row-number {
@@ -1297,6 +1306,61 @@ tr.row-selected td.row-number {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
+}
+
+/* Editable cell textarea (cell expansion modal in edit mode) */
+.modal-cell-editor {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  line-height: 1.6;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: var(--space-md);
+  width: 100%;
+  outline: none;
+  resize: vertical;
+  min-height: 80px;
+}
+
+.modal-cell-editor:focus {
+  border-color: var(--accent-blue);
+}
+
+.modal-cell-editor:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.cell-modal-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-lg);
+  background: rgba(243, 139, 168, 0.08);
+  border-top: 1px solid var(--accent-red);
+  color: var(--accent-red);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+}
+
+.cell-modal-error-icon {
+  flex-shrink: 0;
+}
+
+.cell-modal-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--text-muted);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: cell-modal-spin 0.7s linear infinite;
+}
+
+@keyframes cell-modal-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Editable SQL textarea — inherits modal-content sizing */

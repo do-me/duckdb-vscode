@@ -26,6 +26,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ### Notes
 - `Cmd+A` followed by Copy on a huge result set is intentionally capped at 10,000 rows (with a trailing `-- truncated` marker). For full exports, use the **Copy Table** / **Export** buttons in the footer — those use the server-side copy path and respect `duckdb.maxCopyRows`.
 
+### Added (continued)
+- **Resizable row-number gutter.** Default width now scales with the digit count of the current result set (so `10,000,000` doesn't clip), and a drag handle on the `#` header lets you resize it like any other column. Row indexes are formatted with thousands separators.
+- **Editable cells with save-to-file.** Double-click a cell in the data viewer to open the expansion modal in **edit** mode — type the new value and press ⌘↵ (or click Save) to persist. Save UPDATEs the in-memory DuckDB cache and rewrites the source file via `COPY ... TO 'tmp'` followed by an atomic rename, so a crash mid-write can never corrupt the original. Empty input means NULL; `TRY_CAST` makes type-incompatible input fall back to NULL instead of erroring. Supported formats: `parquet`, `csv`, `tsv`, `json`, `jsonl`, `ndjson`. Editing is gated to safe contexts only — disabled when the cache is a derived projection, a `LIMIT`-sampled load, an ad-hoc SQL result, or an `xlsx` sheet (no DuckDB write support). Complex types (`LIST`, `STRUCT`, `MAP`) are read-only for now.
+
 ## [0.0.24] - 2026-03-25
 
 ### Added

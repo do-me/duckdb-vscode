@@ -687,8 +687,11 @@ export class DuckDBService {
     }
 
     try {
-      // Build query with optional filtering and sorting
-      let sql = `SELECT * FROM "${cacheId}"`;
+      // Build query with optional filtering and sorting.
+      // We always fetch DuckDB's `rowid` pseudo-column under the hidden field
+      // name `__rowid` so the webview can address a specific row for in-place
+      // edits regardless of the current sort/filter context.
+      let sql = `SELECT rowid AS __rowid, * FROM "${cacheId}"`;
       if (whereClause && whereClause.trim()) {
         sql += ` WHERE ${whereClause}`;
       }
@@ -725,6 +728,117 @@ export class DuckDBService {
     } catch (err) {
       const error = err as Error;
       throw new Error(`Failed to fetch page: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update a single cell in a cached result by rowid.
+   *
+   * The user-entered string is wrapped in TRY_CAST so type-incompatible
+   * input becomes NULL instead of crashing. Empty input is treated as NULL.
+   * Returns the value as actually stored (post-cast) so the webview can
+   * reflect what DuckDB ended up writing.
+   */
+  async updateCacheCell(
+    cacheId: string,
+    rowid: number | bigint,
+    column: string,
+    columnType: string,
+    newValue: string | null
+  ): Promise<unknown> {
+    await this.initialize();
+    if (!this.connection) throw new Error("DuckDB connection not available");
+    if (!cacheId) throw new Error("Cannot edit utility-statement results");
+    if (!Number.isFinite(Number(rowid))) {
+      throw new Error(`Invalid rowid: ${rowid}`);
+    }
+
+    const escCol = column.replace(/"/g, '""');
+    let valExpr: string;
+    if (newValue === null || newValue === "") {
+      valExpr = "NULL";
+    } else {
+      const escVal = newValue.replace(/'/g, "''");
+      // TRY_CAST prevents bad input from raising — it returns NULL instead,
+      // and the post-update SELECT shows the user what landed in the table.
+      valExpr = `TRY_CAST('${escVal}' AS ${columnType})`;
+    }
+
+    await this.connection.run(
+      `UPDATE "${cacheId}" SET "${escCol}" = ${valExpr} WHERE rowid = ${rowid}`
+    );
+
+    // Re-read to return the actually-stored value (after the cast).
+    const reader = await this.connection.runAndReadAll(
+      `SELECT "${escCol}" AS v FROM "${cacheId}" WHERE rowid = ${rowid}`
+    );
+    const rows = reader.getRowObjectsJS();
+    if (rows.length === 0) {
+      throw new Error(`Row ${rowid} not found in cache`);
+    }
+    const stored = serializeRow(rows[0] as Record<string, unknown>, ["v"]).v;
+    return stored;
+  }
+
+  /**
+   * Write the cache table back to a source file. Uses a temp file +
+   * atomic rename so a crash mid-write can never corrupt the source.
+   */
+  async writeCacheToFile(
+    cacheId: string,
+    targetPath: string,
+    format: "parquet" | "csv" | "tsv" | "json" | "jsonl" | "ndjson"
+  ): Promise<void> {
+    await this.initialize();
+    if (!this.connection) throw new Error("DuckDB connection not available");
+    if (!cacheId) throw new Error("No cache to write back");
+
+    let copyOpts: string;
+    switch (format) {
+      case "parquet":
+        copyOpts = "(FORMAT PARQUET)";
+        break;
+      case "csv":
+        copyOpts = "(FORMAT CSV, HEADER true)";
+        break;
+      case "tsv":
+        copyOpts = "(FORMAT CSV, DELIMITER '\\t', HEADER true)";
+        break;
+      case "json":
+        copyOpts = "(FORMAT JSON, ARRAY true)";
+        break;
+      case "jsonl":
+      case "ndjson":
+        copyOpts = "(FORMAT JSON)";
+        break;
+      default:
+        throw new Error(`Unsupported write-back format: ${format}`);
+    }
+
+    const tmpPath = `${targetPath}.duckdb-vscode.tmp`;
+    const escTmp = tmpPath.replace(/'/g, "''");
+
+    // Clean up any leftover tmp from a previous failed write.
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      /* best-effort */
+    }
+
+    try {
+      // ORDER BY rowid preserves the original row order on disk.
+      await this.connection.run(
+        `COPY (SELECT * FROM "${cacheId}" ORDER BY rowid) TO '${escTmp}' ${copyOpts}`
+      );
+      // Atomic rename — the source file is never partially written.
+      fs.renameSync(tmpPath, targetPath);
+    } catch (e) {
+      try {
+        fs.rmSync(tmpPath, { force: true });
+      } catch {
+        /* best-effort */
+      }
+      throw e;
     }
   }
 

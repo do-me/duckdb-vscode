@@ -52,6 +52,12 @@ export interface ResultsTableProps {
   /** Chunk size used for virtualized fetches. Server returns pages of this size. */
   pageSize: number;
   maxCopyRows: number;
+  /**
+   * When true, the cell expansion modal exposes a Save button that persists
+   * edits back to the source. Only set by the host when the cache is the
+   * full unbounded source and the format supports DuckDB COPY write-back.
+   */
+  editable?: boolean;
   hasResults?: boolean;
   statementIndex?: number;
   totalStatements?: number;
@@ -68,6 +74,7 @@ export function ResultsTable({
   initialPage,
   pageSize,
   maxCopyRows,
+  editable = false,
   hasResults = true,
   statementIndex,
   totalStatements,
@@ -75,7 +82,7 @@ export function ResultsTable({
   isExpanded = true,
   onToggleExpand,
 }: ResultsTableProps) {
-  const { cacheId, sql, columns, totalRows, executionTime } = meta;
+  const { cacheId, sql, columns, columnTypes, totalRows, executionTime } = meta;
 
   // ---- Sort / filter state ----
   const [sort, setSort] = useState<{ column: string | null; direction: SortDirection }>({
@@ -129,8 +136,35 @@ export function ResultsTable({
   // ---- Misc UI state ----
   const [showSqlModal, setShowSqlModal] = useState(false);
   const [showFullSqlModal, setShowFullSqlModal] = useState(false);
+  /**
+   * Column widths. Keyed by column name. The synthetic key `__rownum__`
+   * holds the user-overridden width of the row-number gutter; if absent,
+   * the gutter falls back to a digit-derived default.
+   */
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
-  const [expandedCell, setExpandedCell] = useState<{ value: unknown; column: string } | null>(null);
+  /**
+   * The cell currently shown in the expansion / edit modal. When `editable`
+   * is true and this cell's row is cached (so we have a __rowid), the modal
+   * exposes a Save button.
+   */
+  const [expandedCell, setExpandedCell] = useState<{
+    value: unknown;
+    column: string;
+    columnType: string;
+    rowIndex: number;
+    colIndex: number;
+    rowId: number | null;
+  } | null>(null);
+  /**
+   * In-flight cell save. Wires the modal's "Saving…" state and routes the
+   * `cellUpdated` response back to the right column for cache patching.
+   */
+  const [cellSave, setCellSave] = useState<{
+    rowId: number;
+    column: string;
+    columnType: string;
+  } | null>(null);
+  const [cellSaveError, setCellSaveError] = useState<string | null>(null);
 
   // Selection state — uses ABSOLUTE row indexes (over the full filtered result set).
   interface CellPosition { row: number; col: number; }
@@ -404,11 +438,47 @@ export function ResultsTable({
       } else if (message.type === 'refreshError') {
         setIsRefreshing(false);
         toast.show(message.error || 'Refresh failed');
+      } else if (message.type === 'cellUpdated') {
+        // Match against in-flight cell save by rowId+column.
+        if (
+          !cellSave ||
+          message.rowId !== cellSave.rowId ||
+          message.column !== cellSave.column
+        ) return;
+        if (message.error) {
+          setCellSaveError(message.error);
+          setCellSave(null);
+          return;
+        }
+        // Patch the cached chunk so the table reflects the new value
+        // immediately, without round-tripping a fresh fetch.
+        setChunks((prev) => {
+          const next = new Map(prev);
+          for (const [chunkIdx, rows] of next) {
+            for (let i = 0; i < rows.length; i++) {
+              const r = rows[i] as Record<string, unknown>;
+              const rid = r.__rowid;
+              const ridNum = typeof rid === 'bigint' ? Number(rid) : (typeof rid === 'number' ? rid : null);
+              if (ridNum === message.rowId) {
+                const updated = { ...r, [message.column]: message.newValue };
+                const newRows = rows.slice();
+                newRows[i] = updated;
+                next.set(chunkIdx, newRows);
+                return next;
+              }
+            }
+          }
+          return next;
+        });
+        setCellSave(null);
+        setCellSaveError(null);
+        setExpandedCell(null);
+        toast.show('Cell saved');
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [cacheId, pageSize, renderStart, renderEnd, toast]);
+  }, [cacheId, pageSize, renderStart, renderEnd, toast, cellSave]);
 
   // --------------------------------------------------------------------------
   // Sort / filter handlers — all converge on resetAndReload.
@@ -520,6 +590,29 @@ export function ResultsTable({
     setColumnWidths((prev) => ({ ...prev, [column]: Math.max(50, width) }));
   }, []);
 
+  /**
+   * Row-number gutter width. Default scales with the digit count of the
+   * largest visible row index so values like `10,000,000` don't clip.
+   * Overridden when the user drags the gutter's resize handle.
+   */
+  const ROW_NUMBER_KEY = '__rownum__';
+  const rowNumberWidth = useMemo(() => {
+    if (columnWidths[ROW_NUMBER_KEY]) return columnWidths[ROW_NUMBER_KEY];
+    // (filteredRowCount).toLocaleString() length × ~7px monospace + padding.
+    const digits = Math.max(1, String(Math.max(filteredRowCount, 1)).length);
+    const commas = Math.max(0, Math.floor((digits - 1) / 3));
+    return Math.max(50, (digits + commas) * 8 + 20);
+  }, [columnWidths, filteredRowCount]);
+  const rowNumberStyle: React.CSSProperties = {
+    width: rowNumberWidth,
+    minWidth: rowNumberWidth,
+    maxWidth: rowNumberWidth,
+  };
+  const handleRowNumberResize = useCallback(
+    (width: number) => handleColumnResize(ROW_NUMBER_KEY, width),
+    [handleColumnResize]
+  );
+
   const copyToClipboard = useCallback(async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -605,8 +698,43 @@ export function ResultsTable({
     const row = lookupRow(rowIdx);
     if (!row) return;
     const col = columns[colIdx];
-    setExpandedCell({ value: row[col], column: col });
-  }, [lookupRow, columns]);
+    // __rowid is injected by the server (fetchPage) so the modal can edit
+    // the right row regardless of the active sort / filter context.
+    const rid = (row as Record<string, unknown>).__rowid;
+    const rowId = typeof rid === 'bigint' ? Number(rid) : (typeof rid === 'number' ? rid : null);
+    setExpandedCell({
+      value: row[col],
+      column: col,
+      columnType: columnTypes[colIdx] || 'VARCHAR',
+      rowIndex: rowIdx,
+      colIndex: colIdx,
+      rowId,
+    });
+    setCellSaveError(null);
+  }, [lookupRow, columns, columnTypes]);
+
+  /**
+   * Save handler for the cell modal. Posts updateCell to the host, leaving
+   * the modal in a saving state until the matching cellUpdated response
+   * arrives in the message effect below.
+   */
+  const handleCellSave = useCallback((newValue: string | null) => {
+    if (!expandedCell || expandedCell.rowId === null) return;
+    setCellSave({
+      rowId: expandedCell.rowId,
+      column: expandedCell.column,
+      columnType: expandedCell.columnType,
+    });
+    setCellSaveError(null);
+    getVscodeApi()?.postMessage({
+      type: 'updateCell',
+      cacheId,
+      rowId: expandedCell.rowId,
+      column: expandedCell.column,
+      columnType: expandedCell.columnType,
+      newValue,
+    });
+  }, [expandedCell, cacheId]);
 
   const handleRowSelect = useCallback((rowIdx: number, e: React.MouseEvent) => {
     if (e.shiftKey && selection) {
@@ -783,8 +911,17 @@ export function ResultsTable({
         <CellExpansionModal
           value={expandedCell.value}
           column={expandedCell.column}
-          onClose={() => setExpandedCell(null)}
+          columnType={expandedCell.columnType}
+          canEdit={editable && expandedCell.rowId !== null}
+          isSaving={cellSave !== null}
+          saveError={cellSaveError}
+          onClose={() => {
+            if (cellSave) return; // don't close while a save is in flight
+            setExpandedCell(null);
+            setCellSaveError(null);
+          }}
           onCopy={(text) => copyToClipboard(text, 'cell')}
+          onSave={handleCellSave}
         />
       )}
 
@@ -938,7 +1075,7 @@ export function ResultsTable({
             <table>
               <thead>
                 <tr>
-                  <th className="row-number-header">#</th>
+                  <RowNumberHeader width={rowNumberWidth} onResize={handleRowNumberResize} />
                   {columns.map((col, idx) => (
                     <th key={idx}>
                       <div className="th-content">
@@ -984,7 +1121,7 @@ export function ResultsTable({
           <table>
             <thead>
               <tr ref={headerRowRef}>
-                <th className="row-number-header">#</th>
+                <RowNumberHeader width={rowNumberWidth} onResize={handleRowNumberResize} />
                 {columns.map((col, idx) => {
                   const hasFilter = filterState.filters.some((f) => f.column === col);
                   return (
@@ -1022,7 +1159,7 @@ export function ResultsTable({
                       ref={isFirst ? firstRenderedRowRef : null}
                       className="virt-row virt-row-loading"
                     >
-                      <td className="row-number">{index + 1}</td>
+                      <td className="row-number" style={rowNumberStyle}>{(index + 1).toLocaleString()}</td>
                       {columns.map((col, colIdx) => (
                         <td key={colIdx} className="cell-loading">
                           <span className="cell-skeleton" />
@@ -1037,8 +1174,12 @@ export function ResultsTable({
                     ref={isFirst ? firstRenderedRowRef : null}
                     className={`virt-row ${rowSel ? 'row-selected' : ''}`}
                   >
-                    <td className="row-number" onClick={(e) => handleRowSelect(index, e)}>
-                      {index + 1}
+                    <td
+                      className="row-number"
+                      style={rowNumberStyle}
+                      onClick={(e) => handleRowSelect(index, e)}
+                    >
+                      {(index + 1).toLocaleString()}
                     </td>
                     {columns.map((col, colIdx) => (
                       <td
@@ -1103,6 +1244,62 @@ export function ResultsTable({
 // ============================================================================
 // HELPER COMPONENTS
 // ============================================================================
+
+/**
+ * Resize-handle drag logic shared by ResizableHeader and RowNumberHeader.
+ * Returns the mousedown handler to wire on the handle element.
+ */
+function useResizeHandle(
+  thRef: React.RefObject<HTMLTableCellElement | null>,
+  onResize: (width: number) => void,
+  onResizingChange?: (resizing: boolean) => void
+) {
+  return useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = thRef.current?.offsetWidth || 100;
+      const handleMouseMove = (ev: MouseEvent) => {
+        const delta = ev.clientX - startX;
+        onResize(startWidth + delta);
+      };
+      const handleMouseUp = () => {
+        onResizingChange?.(false);
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+      onResizingChange?.(true);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    },
+    [thRef, onResize, onResizingChange]
+  );
+}
+
+interface RowNumberHeaderProps {
+  width: number;
+  onResize: (width: number) => void;
+}
+
+function RowNumberHeader({ width, onResize }: RowNumberHeaderProps) {
+  const thRef = useRef<HTMLTableCellElement>(null);
+  const handleMouseDown = useResizeHandle(thRef, onResize);
+  return (
+    <th
+      ref={thRef}
+      className="row-number-header"
+      style={{ width, minWidth: width, maxWidth: width }}
+    >
+      #
+      <div className="resize-handle" onMouseDown={handleMouseDown} />
+    </th>
+  );
+}
 
 interface ResizableHeaderProps {
   column: string;
@@ -1181,49 +1378,144 @@ function ResizableHeader({ column, width, isSorted, sortDirection, isSelected, h
 interface CellExpansionModalProps {
   value: unknown;
   column: string;
+  columnType?: string;
+  /** When true, the modal becomes an editor with a Save button. */
+  canEdit?: boolean;
+  /** True while the host is processing the save (Save button shows a spinner). */
+  isSaving?: boolean;
+  /** Last save error from the host; cleared by editing the value again. */
+  saveError?: string | null;
   onClose: () => void;
   onCopy: (text: string) => void;
+  /** Persist the new value. `null` represents NULL (empty input). */
+  onSave?: (newValue: string | null) => void;
 }
 
-function CellExpansionModal({ value, column, onClose, onCopy }: CellExpansionModalProps) {
+function CellExpansionModal({
+  value,
+  column,
+  columnType,
+  canEdit = false,
+  isSaving = false,
+  saveError = null,
+  onClose,
+  onCopy,
+  onSave,
+}: CellExpansionModalProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // The original value rendered as a string. NULL is shown as the empty
+  // string while editing (so the user can clear a cell to NULL by emptying
+  // it and saving), but as the literal "NULL" when read-only.
+  const isNull = value === null || value === undefined;
+  const isJson = typeof value === 'object' && value !== null;
+
   const displayText = useMemo(() => {
-    if (value === null || value === undefined) return 'NULL';
-    if (typeof value === 'object') {
+    if (isNull) return 'NULL';
+    if (isJson) {
       try { return JSON.stringify(value, null, 2); } catch { return String(value); }
     }
     return String(value);
-  }, [value]);
+  }, [value, isNull, isJson]);
 
-  const isJson = typeof value === 'object' && value !== null;
+  const initialDraft = useMemo(() => {
+    if (isNull) return '';
+    if (isJson) {
+      try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+    }
+    return String(value);
+  }, [value, isNull, isJson]);
+
+  const [draft, setDraft] = useState(initialDraft);
+  // Reset the draft when the underlying cell changes (e.g., user opens a different cell).
+  useEffect(() => { setDraft(initialDraft); }, [initialDraft]);
+
+  // Complex types (LIST, STRUCT, MAP) — TRY_CAST won't reliably reverse the
+  // JSON representation, so editing them in v1 is opt-out.
+  const isComplexType = !!columnType && /^(LIST|STRUCT|MAP|UNION)/i.test(columnType.trim());
+  const editable = canEdit && !!onSave && !isComplexType;
+  const isDirty = editable && draft !== initialDraft;
 
   useEffect(() => {
     if (!isJson) {
       textareaRef.current?.focus();
-      textareaRef.current?.select();
+      if (!editable) textareaRef.current?.select();
     }
-  }, [isJson]);
+  }, [isJson, editable]);
+
+  const handleSave = useCallback(() => {
+    if (!editable || !onSave || !isDirty || isSaving) return;
+    // Empty draft => NULL; otherwise pass the raw string for server-side cast.
+    onSave(draft === '' ? null : draft);
+  }, [editable, onSave, isDirty, isSaving, draft]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (editable && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      handleSave();
+    }
+  }, [editable, handleSave]);
 
   const title = (
     <>
       <span className="modal-column">{column}</span>
-      {isJson && <span className="modal-type">JSON</span>}
+      {columnType && <span className="modal-type">{columnType}</span>}
     </>
   );
+
+  const hint = isSaving
+    ? 'Saving…'
+    : !editable && canEdit && isComplexType
+    ? `Editing ${columnType ?? 'complex'} cells is not supported yet — read-only.`
+    : !canEdit
+    ? 'Read-only — file format does not support write-back, or this is a derived/limited result.'
+    : 'Edit and press ⌘↵ to save · Esc to close';
+
+  // Custom modal action: Save button (only when editable).
+  const actions = editable
+    ? [{
+        icon: isSaving ? <span className="cell-modal-spinner" /> : <span>💾</span>,
+        label: isSaving ? 'Saving…' : (isDirty ? 'Save (⌘↵)' : 'Save'),
+        onClick: handleSave,
+      }]
+    : undefined;
 
   return (
     <Modal
       title={title}
       onClose={onClose}
-      onCopy={() => onCopy(displayText)}
-      hint="Select text and ⌘C to copy, or click Copy button"
-      size={`${displayText.length.toLocaleString()} chars`}
+      onCopy={() => onCopy(editable ? draft : displayText)}
+      hint={hint}
+      size={`${(editable ? draft : displayText).length.toLocaleString()} chars`}
+      actions={actions}
     >
-      {isJson ? (
+      {editable ? (
+        <textarea
+          ref={textareaRef}
+          className="modal-content modal-cell-editor"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={handleKeyDown}
+          spellCheck={false}
+          disabled={isSaving}
+          placeholder="(empty = NULL)"
+        />
+      ) : isJson ? (
         <pre className="modal-content modal-json"><JsonSyntaxHighlight json={displayText} /></pre>
       ) : (
-        <textarea ref={textareaRef} className="modal-content" value={displayText} readOnly spellCheck={false} />
+        <textarea
+          ref={textareaRef}
+          className="modal-content"
+          value={displayText}
+          readOnly
+          spellCheck={false}
+        />
+      )}
+      {saveError && (
+        <div className="cell-modal-error">
+          <span className="cell-modal-error-icon">⚠</span>
+          <span>{saveError}</span>
+        </div>
       )}
     </Modal>
   );

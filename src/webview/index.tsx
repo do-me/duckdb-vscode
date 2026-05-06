@@ -27,6 +27,8 @@ interface AppState {
   containerMetadata: ContainerOverviewMetadata | null;
   pageSize: number;
   maxCopyRows: number;
+  /** True when the current cache reflects the full source and write-back is supported. */
+  editable: boolean;
 }
 
 function App() {
@@ -38,6 +40,7 @@ function App() {
     containerMetadata: null,
     pageSize: 1000,
     maxCopyRows: 50000,
+    editable: false,
   });
 
   React.useEffect(() => {
@@ -50,6 +53,7 @@ function App() {
           result: message.data,
           pageSize: message.pageSize || prev.pageSize,
           maxCopyRows: message.maxCopyRows || prev.maxCopyRows,
+          editable: message.editable === true,
         }));
       } else if (message.type === 'fileMetadata') {
         // `silent: true` means the host pre-loaded metadata while jumping
@@ -130,10 +134,11 @@ function App() {
   if (state.viewMode === 'results' && state.result) {
     const showBackButton = state.fileMetadata !== null;
     return (
-      <QueryPanel 
-        result={state.result} 
+      <QueryPanel
+        result={state.result}
         pageSize={state.pageSize}
         maxCopyRows={state.maxCopyRows}
+        editable={state.editable}
         onBackToOverview={showBackButton ? () => {
           setState(prev => ({ ...prev, viewMode: 'fileOverview' }));
         } : undefined}

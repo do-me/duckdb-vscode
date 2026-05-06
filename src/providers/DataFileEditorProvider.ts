@@ -112,6 +112,20 @@ export class DataFileEditorProvider
         }
         return sql;
       },
+
+      getWriteBackTarget() {
+        // xlsx is excluded — DuckDB's excel extension is read-only.
+        const writableFormats: Record<string, "parquet" | "csv" | "tsv" | "json" | "jsonl" | "ndjson"> = {
+          parquet: "parquet",
+          csv: "csv",
+          tsv: "tsv",
+          json: "json",
+          jsonl: "jsonl",
+          ndjson: "ndjson",
+        };
+        const fmt = writableFormats[fileType];
+        return fmt ? { path: filePath, format: fmt } : null;
+      },
     };
 
     setupOverviewWebview(webviewPanel, this.context, source, {
